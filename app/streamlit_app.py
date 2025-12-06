@@ -8,10 +8,12 @@ import streamlit as st
 
 from src.agent.pipeline import ask_kb
 from src.config.settings import Settings
+from src.validation.rules import validate_response
 
 
 
-# Helpers 
+# Helpers
+
 
 _CITATIONS_RE = re.compile(r"\nCitations:\s*\n.*$", flags=re.IGNORECASE | re.DOTALL)
 
@@ -69,8 +71,25 @@ def _render_answer_with_citations(res: Dict[str, Any]) -> None:
         st.markdown("\n\n**Citations**\n" + citations_md)
 
 
+def _render_validation_banner(query: str, res: Dict[str, Any], expected_source: Optional[str]) -> None:
+    """
+    Show a simple banner if validation flags issues.
+    This is student-friendly: no technical codes unless you want them later.
+    """
+    vr = validate_response(query=query, response=res, expected_source=expected_source)
 
-# Excel
+    if vr.passed:
+        return
+
+    
+    if vr.confidence == "low":
+        st.warning("This answer may be unreliable based on the available documents.")
+    else:
+        st.info("Some parts of this answer may be incomplete based on the available documents.")
+
+
+
+# Excel helpers
 
 def _normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -105,12 +124,10 @@ def _extract_program_table_minimal(df: pd.DataFrame) -> pd.DataFrame:
 
     keep = [c for c in [program_name, degree, location] if c]
     if not keep:
-        
         return df.iloc[:, :3].head(200)
 
     out = df[keep].copy().drop_duplicates()
 
-    
     rename_map = {}
     if program_name:
         rename_map[program_name] = "program_name"
@@ -121,7 +138,6 @@ def _extract_program_table_minimal(df: pd.DataFrame) -> pd.DataFrame:
 
     out = out.rename(columns=rename_map)
 
-    
     ordered = [c for c in ["program_name", "degree", "location"] if c in out.columns]
     return out[ordered]
 
@@ -138,7 +154,9 @@ def main() -> None:
 
     st.title("Constructor University-Programs Selection AI Assistant App")
     st.write(
-        "Welcome to our Constructor University Program Selection AI Assistant.\n Ask questions about any program of your interest and I will try to provide helpful answers.\n For validation purposes, answers include citations at the end."
+        "Welcome to our Constructor University Program Selection AI Assistant.\n"
+        "Ask questions about any program of your interest and I will try to provide helpful answers.\n"
+        "For validation purposes, answers include citations at the end."
     )
 
     cfg = Settings.load()
@@ -179,36 +197,55 @@ def main() -> None:
     # Assistant Chat
     
     with tab_assistant:
+        # Store structured chat turns, not a single markdown blob
         if "chat" not in st.session_state:
-            st.session_state["chat"] = []
-
+            st.session_state["chat"] = []  
+        # Render history
         for msg in st.session_state["chat"]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+            role = msg.get("role")
+            content = msg.get("content") or {}
+
+            with st.chat_message(role):
+                if role == "user":
+                    st.markdown(content.get("text", ""))
+                else:
+                    # assistant
+                    res = content.get("res") or {}
+                    query = content.get("query", "")
+                    expected_source = content.get("expected_source")
+                    _render_validation_banner(query=query, res=res, expected_source=expected_source)
+                    _render_answer_with_citations(res)
 
         user_input = st.chat_input("Ask a question about Constructor University programs…")
         if user_input:
-            st.session_state["chat"].append({"role": "user", "content": user_input})
+            # Save + render user message
+            st.session_state["chat"].append({"role": "user", "content": {"text": user_input}})
             with st.chat_message("user"):
                 st.markdown(user_input)
 
+            # Run retrieval + answer
             with st.chat_message("assistant"):
                 with st.spinner("Searching and generating an answer..."):
                     res = ask_kb(user_input, source=source, top_k=12)
 
-                answer_raw = res.get("answer", "") or ""
-                answer = _strip_citations_block(answer_raw)
-                citations_md = _format_citations(res.get("citations", []) or [])
+                expected_source = None if source == "all" else source
+                _render_validation_banner(query=user_input, res=res, expected_source=expected_source)
+                _render_answer_with_citations(res)
 
-                final_md = answer if answer else "I don't know based on the provided documents."
-                if citations_md:
-                    final_md += "\n\n**Citations**\n" + citations_md
-
-                st.markdown(final_md)
-                st.session_state["chat"].append({"role": "assistant", "content": final_md})
+            # Store structured assistant message
+            st.session_state["chat"].append(
+                {
+                    "role": "assistant",
+                    "content": {
+                        "query": user_input,
+                        "expected_source": (None if source == "all" else source),
+                        "res": res,
+                    },
+                }
+            )
 
     
-    # Programs 
+    # Programs
     
     with tab_programs:
         st.subheader("Bachelor Programs")
@@ -228,7 +265,7 @@ def main() -> None:
             st.warning(f"Could not load master programs list from Excel: {e}")
 
     
-    # Tuition & Fees 
+    # Tuition & Fees
     
     with tab_fees:
         st.subheader("Tuition & Fees")
@@ -238,7 +275,7 @@ def main() -> None:
         )
 
     
-    # English Requirements 
+    # English Requirements
     
     with tab_english:
         st.subheader("English Requirements")
@@ -250,10 +287,15 @@ def main() -> None:
                 source="web",
                 top_k=12,
             )
+        _render_validation_banner(
+            query="English requirements",
+            res=res,
+            expected_source="web",
+        )
         _render_answer_with_citations(res)
 
     
-    # Application Documents 
+    # Application Documents
     
     with tab_docs:
         st.subheader("Application Documents")
@@ -265,13 +307,17 @@ def main() -> None:
                 source="web",
                 top_k=12,
             )
+        _render_validation_banner(
+            query="Application documents",
+            res=res,
+            expected_source="web",
+        )
         _render_answer_with_citations(res)
 
     
     # Contacts
     
     with tab_contacts:
-        
         st.markdown(
             """For any questions regarding admissions and programs, please reach out to the appropriate contact below:
 

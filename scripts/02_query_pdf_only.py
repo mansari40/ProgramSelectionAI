@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue
-
 from src.config.settings import Settings
 from src.llm.openai_client import OpenAIClient
 from src.retrieval.qdrant_store import get_client, search
@@ -25,9 +23,15 @@ def main() -> None:
     llm = OpenAIClient(cfg)
 
     q_emb = llm.embed_texts([args.query])[0]
-    f = Filter(must=[FieldCondition(key="source", match=MatchValue(value="pdf"))])
 
-    hits = search(client, cfg.qdrant_collection, q_emb, top_k=args.topk, query_filter=f)
+    hits = search(
+        client,
+        cfg.qdrant_collection,
+        q_emb,
+        top_k=args.topk,
+        source="pdf",
+        candidate_k=200,
+    )
 
     print(f"\nQUERY (PDF ONLY): {args.query}\n")
     print("Top hits:\n")
@@ -40,7 +44,7 @@ def main() -> None:
 
         print(f"{i}. score={score:.4f} | source=pdf | program_id={program_id} | title={title}")
         print(f"   chunk_id={chunk_id}")
-        print(f"   { _snippet(text) }\n")
+        print(f"   {_snippet(text)}\n")
 
 
 if __name__ == "__main__":

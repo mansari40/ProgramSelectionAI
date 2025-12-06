@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 
-from qdrant_client.models import FieldCondition, Filter, MatchValue
-
 from src.config.settings import Settings
 from src.llm.openai_client import OpenAIClient
 from src.retrieval.qdrant_store import get_client, search
@@ -25,23 +23,29 @@ def main() -> None:
     llm = OpenAIClient(cfg)
 
     q_emb = llm.embed_texts([args.query])[0]
-    f = Filter(must=[FieldCondition(key="source", match=MatchValue(value="web"))])
 
-    hits = search(client, cfg.qdrant_collection, q_emb, top_k=args.topk, query_filter=f)
+    hits = search(
+        client,
+        cfg.qdrant_collection,
+        q_emb,
+        top_k=args.topk,
+        source="web",          # local filtering (stable)
+        candidate_k=200,       # more candidates helps after filtering
+    )
 
     print(f"\nQUERY (WEB ONLY): {args.query}\n")
     print("Top hits:\n")
 
     for i, (score, payload) in enumerate(hits, start=1):
-        program_id = payload.get("program_id") or payload.get("doc_id") or "NA"
+        doc_id = payload.get("doc_id") or "NA"
         title = payload.get("title") or payload.get("program_name") or "NA"
         chunk_id = payload.get("chunk_id") or "NA"
         text = payload.get("text") or ""
 
-        print(f"{i}. score={score:.4f} | source=web | doc_id={program_id}")
+        print(f"{i}. score={score:.4f} | source=web | doc_id={doc_id}")
         print(f"   title/name={title}")
         print(f"   chunk_id={chunk_id}")
-        print(f"   { _snippet(text) }\n")
+        print(f"   {_snippet(text)}\n")
 
 
 if __name__ == "__main__":

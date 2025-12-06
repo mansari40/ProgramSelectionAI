@@ -1,0 +1,28 @@
+data:
+  bachelors_excel: "Data/Bachelors_programs.xlsx"
+  masters_excel: "Data/Masters_programs.xlsx"
+  pdf_bachelor_dir: "Data/PDF/Bachelor"
+  pdf_masters_dir: "Data/PDF/Masters"
+  web_cache_dir: "Data/web_cache"
+  artifacts_dir: "Data/artifacts"
+
+indexing:
+  chunk_chars: 2800
+  chunk_overlap: 350
+  max_chunks_per_doc: 400
+
+retrieval:
+  top_k: 10
+  min_score: 0.15
+
+models:
+  embed_model: "text-embedding-3-large"
+  chat_model: "gpt-4.1-mini"
+
+web:
+  enabled: true
+  seeds:
+    - "https://constructor.university/"
+  allowed_domain: "constructor.university"
+  max_pages: 150
+  rate_limit_seconds: 0.8

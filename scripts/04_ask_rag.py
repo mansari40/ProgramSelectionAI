@@ -55,7 +55,7 @@ CONTEXT EXCERPTS:
 {context}
 """
 
-    # IMPORTANT: match your OpenAIClient.chat(system_prompt, user_prompt)
+    
     answer = llm.chat(SYSTEM_PROMPT, user_prompt)
 
     print("\nANSWER:\n", answer)

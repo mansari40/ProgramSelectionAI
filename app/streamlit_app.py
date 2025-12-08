@@ -14,11 +14,11 @@ from src.validation.rules import validate_response
 # Page style (student-friendly, charming, clean)
 # ------------------------------------------------------------
 
-APP_TITLE = "Constructor University Program Assistant"
+APP_TITLE = "Constructor University - AI Agent"
 APP_TAGLINE = "Find your program using official documents (PDFs, website pages, and program facts)."
 APP_SUBTITLE = (
     "Ask questions, compare programs, and get evidence-backed answers with citations.\n"
-    "The assistant only uses what it can find in the indexed documents."
+    "The agent only uses what it can find in the indexed documents."
 )
 
 SOURCE_UI_LABELS = {
@@ -40,7 +40,7 @@ DEFAULT_QUICK_QUESTIONS = [
     "What are the English language requirements for applying?",
     "What documents do I need to submit for an application?",
     "List programs that teach Python",
-    "Compare Computer Science vs Data Science (tuition, duration, language).",
+    "Compare Data Engineering vs Data Science for society & Business(tuition, duration, language).",
 ]
 
 _CITATIONS_RE = re.compile(r"\nCitations:\s*\n.*$", flags=re.IGNORECASE | re.DOTALL)

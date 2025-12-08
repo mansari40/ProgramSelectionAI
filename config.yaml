@@ -22,7 +22,12 @@ models:
 web:
   enabled: true
   seeds:
-    - "https://constructor.university/"
+    - "https://constructor.university/student-life/registrar-services/study-program-handbooks"
+    - "https://constructor.university/study"
+    - "https://constructor.university/undergraduate-education"
+    - "https://constructor.university/programs/graduate-education"
   allowed_domain: "constructor.university"
   max_pages: 150
   rate_limit_seconds: 0.8
+
+

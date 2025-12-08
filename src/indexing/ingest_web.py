@@ -1,9 +1,11 @@
+# src/indexing/ingest_web.py
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urldefrag, urlparse
+
 import hashlib
 import json
 import time
@@ -24,18 +26,103 @@ class WebDoc:
     meta: Dict[str, Any]
 
 
-def _is_allowed(url: str, allowed_domain: str) -> bool:
+# ----------------------------
+# URL + filtering helpers
+# ----------------------------
+
+_BLOCKED_HOSTS: Set[str] = {
+    # Causes SSL cert verification errors in many environments; not needed for applicant guidance.
+    "teamwork.constructor.university",
+}
+
+# Schemes we never want to crawl
+_BLOCKED_SCHEMES = ("mailto:", "tel:", "javascript:")
+
+# File extensions we never want to download as "web pages"
+_BLOCKED_EXTS = (
+    ".pdf",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
+    ".zip", ".rar", ".7z", ".tar", ".gz",
+    ".mp4", ".mov", ".avi", ".mkv",
+    ".mp3", ".wav",
+    ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+)
+
+
+def _canonicalize(url: str) -> str:
+    """Remove fragments and strip whitespace."""
+    if not url:
+        return ""
+    u, _ = urldefrag(url.strip())
+    return u.strip()
+
+
+def _is_allowed_domain(url: str, allowed_domain: str) -> bool:
+    """
+    Allow exact domain or any subdomain of allowed_domain.
+    """
     try:
-        host = urlparse(url).netloc.lower()
+        host = (urlparse(url).netloc or "").lower()
         return host == allowed_domain or host.endswith("." + allowed_domain)
     except Exception:
         return False
 
 
-def _canonicalize(url: str) -> str:
-    # remove fragments (#section) and normalize
-    u, _frag = urldefrag(url)
-    return u.strip()
+def _has_blocked_ext(url: str) -> bool:
+    p = urlparse(url).path.lower()
+    return any(p.endswith(ext) for ext in _BLOCKED_EXTS)
+
+
+def _allow_url(
+    url: str,
+    allowed_domain: str,
+    allow_paths: Optional[List[str]] = None,
+    deny_paths: Optional[List[str]] = None,
+) -> bool:
+    """
+    Final gate before crawling a URL.
+    - Must be http(s)
+    - Must be allowed domain
+    - Must not be blocked host
+    - Must not look like a binary file by extension
+    - Optional allow/deny by path prefix
+    """
+    u = _canonicalize(url)
+    if not u:
+        return False
+
+    low = u.lower()
+    if any(low.startswith(s) for s in _BLOCKED_SCHEMES):
+        return False
+
+    parsed = urlparse(u)
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    host = (parsed.netloc or "").lower()
+    if host in _BLOCKED_HOSTS:
+        return False
+
+    if not _is_allowed_domain(u, allowed_domain):
+        return False
+
+    if _has_blocked_ext(u):
+        return False
+
+    path = parsed.path or "/"
+
+    if deny_paths:
+        for dp in deny_paths:
+            if dp and path.startswith(dp):
+                return False
+
+    if allow_paths:
+        # allow only if it starts with one of allow_paths
+        ok = any(path.startswith(ap) for ap in allow_paths if ap)
+        if not ok:
+            return False
+
+    return True
 
 
 def _hash_url(url: str) -> str:
@@ -49,49 +136,21 @@ def _cache_paths(cache_dir: Path, url: str) -> Tuple[Path, Path]:
     return html_path, meta_path
 
 
-def _load_cached(cache_dir: Path, url: str) -> Optional[WebDoc]:
-    html_path, meta_path = _cache_paths(cache_dir, url)
-    if not html_path.exists() or not meta_path.exists():
-        return None
+# ----------------------------
+# robots.txt (simple)
+# ----------------------------
 
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        html = html_path.read_text(encoding="utf-8", errors="ignore")
-        text, title = _extract_main_text(html, url)
-        text = normalize_pdf_text(text)
-        return WebDoc(
-            doc_id=meta["doc_id"],
-            url=meta["url"],
-            title=title or meta.get("title", meta["url"]),
-            text=text,
-            meta=meta,
-        )
-    except Exception:
-        return None
-
-
-def _save_cache(cache_dir: Path, url: str, html: str, title: str) -> None:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    html_path, meta_path = _cache_paths(cache_dir, url)
-
-    doc_id = f"web::{_hash_url(url)[:12]}"
-    meta = {
-        "doc_id": doc_id,
-        "url": url,
-        "title": title,
-        "source": "web",
-    }
-    html_path.write_text(html, encoding="utf-8", errors="ignore")
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _robots_allows(session: requests.Session, base_url: str, target_url: str, timeout: float = 10.0) -> bool:
+def _robots_allows(
+    session: requests.Session,
+    base_url: str,
+    target_url: str,
+    timeout: float = 10.0,
+) -> bool:
     """
-    Basic robots.txt handling:
-    - Fetch robots.txt at scheme://host/robots.txt
-    - If cannot fetch, allow
-    - Only checks Disallow for User-agent: *
-    This is intentionally simple; good enough for a student project pipeline.
+    Very simple robots.txt:
+    - fetch scheme://host/robots.txt
+    - only parse User-agent: * and Disallow:
+    - if robots cannot be fetched, allow
     """
     try:
         parsed = urlparse(base_url)
@@ -127,37 +186,9 @@ def _robots_allows(session: requests.Session, base_url: str, target_url: str, ti
         return True
 
 
-def _extract_main_text(html: str, url: str) -> Tuple[str, str]:
-    """
-    Prefer trafilatura for main-text extraction; fall back to BeautifulSoup.
-    Returns (text, title).
-    """
-    title = ""
-
-    # 1) Try trafilatura
-    try:
-        import trafilatura  # type: ignore
-
-        downloaded = trafilatura.extract(
-            html,
-            url=url,
-            include_comments=False,
-            include_tables=False,
-            include_images=False,
-            output_format="txt",
-        )
-        # trafilatura may return None if it can't extract
-        if downloaded and downloaded.strip():
-            title = _extract_title_bs4(html) or url
-            return downloaded, title
-    except Exception:
-        pass
-
-    # 2) Fallback: BeautifulSoup
-    text = _fallback_bs4_text(html)
-    title = _extract_title_bs4(html) or url
-    return text, title
-
+# ----------------------------
+# Text extraction
+# ----------------------------
 
 def _extract_title_bs4(html: str) -> str:
     try:
@@ -172,26 +203,50 @@ def _extract_title_bs4(html: str) -> str:
 
 
 def _fallback_bs4_text(html: str) -> str:
-    """
-    Conservative extraction: removes nav/script/style and returns visible text.
-    """
     try:
         from bs4 import BeautifulSoup  # type: ignore
 
         soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "aside"]):
             tag.decompose()
-        # Keep paragraphs-like text
-        text = soup.get_text(separator="\n")
-        return text
+        return soup.get_text(separator="\n")
     except Exception:
-        # last resort
         return html
+
+
+def _extract_main_text(html: str, url: str) -> Tuple[str, str]:
+    """
+    Prefer trafilatura if available, else BeautifulSoup fallback.
+    Returns (text, title).
+    """
+    # 1) trafilatura
+    try:
+        import trafilatura  # type: ignore
+
+        extracted = trafilatura.extract(
+            html,
+            url=url,
+            include_comments=False,
+            include_tables=False,
+            include_images=False,
+            output_format="txt",
+        )
+        if extracted and extracted.strip():
+            title = _extract_title_bs4(html) or url
+            return extracted, title
+    except Exception:
+        pass
+
+    # 2) fallback
+    text = _fallback_bs4_text(html)
+    title = _extract_title_bs4(html) or url
+    return text, title
 
 
 def _extract_links(html: str, base_url: str) -> List[str]:
     """
-    Extract <a href="..."> links (same-domain filtering happens later).
+    Extract absolute links from <a href="...">.
+    Filters out obvious bad schemes early.
     """
     out: List[str] = []
     try:
@@ -199,38 +254,95 @@ def _extract_links(html: str, base_url: str) -> List[str]:
 
         soup = BeautifulSoup(html, "html.parser")
         for a in soup.find_all("a", href=True):
-            href = a.get("href") or ""
-            href = href.strip()
+            href = (a.get("href") or "").strip()
             if not href:
                 continue
+            low = href.lower()
+            if any(low.startswith(s) for s in _BLOCKED_SCHEMES):
+                continue
+
             abs_url = urljoin(base_url, href)
             abs_url = _canonicalize(abs_url)
+
+            # Protect against malformed concatenations: base + absolute
+            # e.g., "https://constructor.university/https://constructor.university/..."
+            if "://constructor.university/https://" in abs_url:
+                continue
+
             out.append(abs_url)
     except Exception:
         return out
     return out
 
 
+# ----------------------------
+# Cache load/save
+# ----------------------------
+
+def _load_cached(cache_dir: Path, url: str) -> Optional[WebDoc]:
+    html_path, meta_path = _cache_paths(cache_dir, url)
+    if not html_path.exists() or not meta_path.exists():
+        return None
+
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        html = html_path.read_text(encoding="utf-8", errors="ignore")
+        text, title = _extract_main_text(html, url)
+        text = normalize_pdf_text(text)
+        return WebDoc(
+            doc_id=meta["doc_id"],
+            url=meta["url"],
+            title=title or meta.get("title", meta["url"]),
+            text=text,
+            meta=meta,
+        )
+    except Exception:
+        return None
+
+
+def _save_cache(cache_dir: Path, url: str, html: str, title: str) -> str:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    html_path, meta_path = _cache_paths(cache_dir, url)
+
+    doc_id = f"web::{_hash_url(url)[:12]}"
+    meta = {
+        "doc_id": doc_id,
+        "url": url,
+        "title": title,
+        "source": "web",
+    }
+    html_path.write_text(html, encoding="utf-8", errors="ignore")
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return doc_id
+
+
+# ----------------------------
+# Ingest web (crawl)
+# ----------------------------
+
 def ingest_web(cfg: Optional[Settings] = None) -> List[WebDoc]:
     """
-    Crawl from cfg.web.seeds, cache pages, extract main text,
-    return WebDoc list for downstream chunking/embedding/upsert.
+    Crawl from cfg.web.seeds, cache HTML pages, extract main text.
+    Only returns HTML pages as WebDoc (no PDFs, no images).
     """
     cfg = cfg or Settings.load()
     logger = get_logger()
 
     if not cfg.web.enabled:
-    # keep behavior explicit: do nothing unless enabled
-        logger.info("Web ingestion disabled (cfg.web.enabled=false).")
+        logger.info("Web ingestion disabled (web.enabled=false).")
         return []
 
     cache_dir = Path(cfg.web_cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    seeds = cfg.web.seeds
+    seeds = [s for s in (cfg.web.seeds or []) if s]
     allowed_domain = cfg.web.allowed_domain
     max_pages = int(cfg.web.max_pages)
     rate_limit = float(cfg.web.rate_limit_seconds)
+
+    # Optional allow/deny path prefixes (safe defaults: allow all)
+    allow_paths = getattr(cfg.web, "allow_paths", None)
+    deny_paths = getattr(cfg.web, "deny_paths", None)
 
     session = requests.Session()
     session.headers.update(
@@ -246,12 +358,16 @@ def ingest_web(cfg: Optional[Settings] = None) -> List[WebDoc]:
 
     for s in seeds:
         u = _canonicalize(s)
-        if _is_allowed(u, allowed_domain):
+        if _allow_url(u, allowed_domain, allow_paths=allow_paths, deny_paths=deny_paths):
             queue.append(u)
             seen.add(u)
 
     while queue and len(docs) < max_pages:
         url = queue.pop(0)
+        url = _canonicalize(url)
+
+        if not _allow_url(url, allowed_domain, allow_paths=allow_paths, deny_paths=deny_paths):
+            continue
 
         if not _robots_allows(session, url, url):
             logger.info(f"[web] robots blocked: {url}")
@@ -262,44 +378,68 @@ def ingest_web(cfg: Optional[Settings] = None) -> List[WebDoc]:
             docs.append(cached)
             continue
 
-        # Rate limit
         time.sleep(rate_limit)
 
         try:
-            r = session.get(url, timeout=15)
+            # HEAD first to avoid downloading binaries
+            try:
+                h = session.head(url, timeout=12, allow_redirects=True)
+                ctype = (h.headers.get("Content-Type") or "").lower()
+                if ctype and ("text/html" not in ctype) and ("application/xhtml" not in ctype):
+                    logger.info(f"[web] skip non-html {url} content-type={ctype.split(';')[0]}")
+                    continue
+            except Exception:
+                # If HEAD fails, we proceed with GET (some servers block HEAD)
+                pass
+
+            r = session.get(url, timeout=20)
             if r.status_code != 200:
                 logger.info(f"[web] skip {url} status={r.status_code}")
+                continue
+
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            if ctype and ("text/html" not in ctype) and ("application/xhtml" not in ctype):
+                logger.info(f"[web] skip non-html {url} content-type={ctype.split(';')[0]}")
                 continue
 
             html = r.text or ""
             text, title = _extract_main_text(html, url)
             text = normalize_pdf_text(text)
 
-            _save_cache(cache_dir, url, html, title)
+            if not text.strip():
+                # Don't waste embeddings on empty extractions
+                continue
 
-            doc_id = f"web::{_hash_url(url)[:12]}"
+            doc_id = _save_cache(cache_dir, url, html, title)
+
             docs.append(
                 WebDoc(
                     doc_id=doc_id,
                     url=url,
                     title=title or url,
                     text=text,
-                    meta={"source": "web", "url": url, "title": title or url},
+                    meta={"source": "web", "url": url, "title": title or url, "doc_id": doc_id},
                 )
             )
 
-            # Discover more links
+            # Discover more links (bounded)
             for link in _extract_links(html, url):
-                if len(seen) >= max_pages * 8:
-                    # cap link frontier growth
+                if len(seen) >= max_pages * 10:
                     break
-                if not _is_allowed(link, allowed_domain):
-                    continue
+                link = _canonicalize(link)
                 if link in seen:
+                    continue
+                if not _allow_url(link, allowed_domain, allow_paths=allow_paths, deny_paths=deny_paths):
                     continue
                 seen.add(link)
                 queue.append(link)
 
+        except requests.exceptions.SSLError as e:
+            logger.info(f"[web] skip ssl {url}: {e}")
+            continue
+        except requests.exceptions.RequestException as e:
+            logger.info(f"[web] error {url}: {e}")
+            continue
         except Exception as e:
             logger.info(f"[web] error {url}: {e}")
             continue

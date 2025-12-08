@@ -46,11 +46,10 @@ def normalize_pdf_text(text: str) -> str:
     # Keep paragraph breaks when there are 2+ newlines.
     # Strategy:
     # 1) temporarily mark paragraph boundaries
-    t = t.replace("\n\n", "\n¶\n")
-    # 2) flatten remaining newlines to spaces
+    PARA = "\n__PARA_BREAK__\n"
+    t = re.sub(r"\n{2,}", PARA, t)
     t = t.replace("\n", " ")
-    # 3) restore paragraph boundaries
-    t = t.replace(" ¶ ", "\n\n").replace("¶", "\n\n")
+    t = t.replace("PARA", "\n\n").replace("¶", "\n\n")
 
     # Normalize whitespace
     t = _MULTI_SPACE_RE.sub(" ", t).strip()

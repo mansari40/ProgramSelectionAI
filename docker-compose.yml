@@ -1,0 +1,11 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.16.0
+    container_name: capstone-qdrant
+    ports:
+      - "6334:6333"
+    volumes:
+      - capstone_qdrant_data:/qdrant/storage
+
+volumes:
+  capstone_qdrant_data:

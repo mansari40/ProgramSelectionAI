@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     qdrant_url: str
     qdrant_collection: str = "constructor_kb"
     qdrant_api_key: Optional[str] = None
-
+    embedding_dim: Optional[int] = None
+    
     # Non-secrets / yaml-driven
     bachelors_excel: Path = Path("Data/Bachelors_programs.xlsx")
     masters_excel: Path = Path("Data/Masters_programs.xlsx")

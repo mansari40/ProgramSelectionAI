@@ -76,21 +76,10 @@ Students can ask natural-language questions and receive **transparent, citation-
 
 ## Technical Architecture
 
-User Question
-   ↓
-Embedding Model (OpenAI)
-   ↓
-Qdrant Vector Search
-   ↓
-Source Filtering (PDF / Excel / Web)
-   ↓
-Context Assembly (Top-K chunks)
-   ↓
-LLM Answer Generation (Strict RAG rules)
-   ↓
-Validation & Evidence Limiting
-   ↓
-Final Answer + Citations
+**User Question** → **Embedding Model (OpenAI)** → **Qdrant Vector Search** →  
+**Source Filtering (PDF / Excel / Web)** → **Context Assembly (Top-K Chunks)** →  
+**LLM Answer Generation (Strict RAG Rules)** → **Validation & Evidence Limiting** →  
+**Final Answer + Citations**
 
 ---
 
